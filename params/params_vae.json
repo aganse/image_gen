@@ -1,0 +1,49 @@
+{
+  "run_params": {
+    "output_dir": "output/vae",
+    "model_dir": "model/vae/cats_64x64",
+    "model_name": "vae",
+    "dataset": "cats",
+    "train_subdir": "train",
+    "do_train": true,
+    "do_final_eval": true,
+    "cache_in_memory": true,
+    "num_workers": 0,
+    "num_gen_sims": 64,
+    "num_grid_images": 64,
+    "eval_every_n_epochs": 10,
+    "num_eval_sims": 1000,
+    "num_final_metric_sims": 5000,
+    "final_metrics": ["fid", "kid", "is"],
+    "num_real_metric_images": 0,
+    "kid_subset_size": 1000,
+    "sample_batch_size": 64,
+    "num_recon_images": 16,
+    "seed": 1234
+  },
+  "training_params": {
+    "num_epochs": 200,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "early_stopping_patience": 0,
+    "num_data_input": 0,
+    "hflip_augment": true,
+    "grad_norm_thresh": null,
+    "kl_weight": 1.0,
+    "kl_warmup_epochs": 10,
+    "recon_loss": "mse",
+    "weight_decay": 0.0,
+    "precision": "32-true",
+    "tracking_tool": "mlflow",
+    "tracking_port": 5000,
+    "tracking_expt_name": "image_gen",
+    "save_model_weights": true,
+    "checkpoint_every_n_epochs": 10
+  },
+  "model_arch_params": {
+    "image_shape": [64, 64, 3],
+    "latent_dim": 128,
+    "base_channels": 64,
+    "channel_mults": [1, 2, 4, 8]
+  }
+}

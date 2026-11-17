@@ -1,0 +1,59 @@
+{
+  "run_params": {
+    "output_dir": "output/diffusion",
+    "model_dir": "model/diffusion/cats_64x64",
+    "model_name": "diffusion",
+    "dataset": "cats",
+    "train_subdir": "train",
+    "do_train": true,
+    "do_final_eval": true,
+    "cache_in_memory": true,
+    "num_workers": 0,
+    "num_gen_sims": 64,
+    "num_grid_images": 64,
+    "eval_every_n_epochs": 25,
+    "num_eval_sims": 1000,
+    "num_final_metric_sims": 5000,
+    "final_metrics": ["fid", "kid", "is"],
+    "num_real_metric_images": 0,
+    "kid_subset_size": 1000,
+    "sample_batch_size": 128,
+    "seed": 1234
+  },
+  "training_params": {
+    "num_epochs": 500,
+    "batch_size": 64,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0,
+    "ema_decay": 0.9999,
+    "early_stopping_patience": 0,
+    "num_data_input": 0,
+    "hflip_augment": true,
+    "grad_norm_thresh": 1.0,
+    "precision": "16-mixed",
+    "tracking_tool": "mlflow",
+    "tracking_port": 5000,
+    "tracking_expt_name": "image_gen",
+    "save_model_weights": true,
+    "checkpoint_every_n_epochs": 10
+  },
+  "model_arch_params": {
+    "image_shape": [64, 64, 3],
+    "hf_model_class": "UNet2DModel",
+    "hf_model_config": {
+      "layers_per_block": 2,
+      "block_out_channels": [128, 128, 256, 256],
+      "down_block_types": ["DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"],
+      "up_block_types": ["UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"]
+    },
+    "hf_pretrained": null,
+    "train_scheduler_class": "DDPMScheduler",
+    "train_scheduler_config": {
+      "num_train_timesteps": 1000,
+      "beta_schedule": "linear",
+      "prediction_type": "epsilon"
+    },
+    "sample_scheduler_class": "DDIMScheduler",
+    "num_inference_steps": 50
+  }
+}

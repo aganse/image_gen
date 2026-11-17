@@ -1,0 +1,53 @@
+{
+  "jobDefinitionName": "${JOB_DEF_NAME}",
+  "type": "container",
+  "retryStrategy": {
+    "attempts": 1
+  },
+  "timeout": {
+    "attemptDurationSeconds": 3600
+  },
+  "containerProperties": {
+    "vcpus": 3,
+    "memory": 14000,
+    "resourceRequirements": [
+      {
+        "type": "GPU",
+        "value": "1"
+      }
+    ],
+    "environment": [
+      {
+        "name": "AWS_DEFAULT_REGION",
+        "value": "${AWS_REGION}"
+      },
+      {
+        "name": "MLFLOW_TRACKING_URI",
+        "value": "${MLFLOW_TRACKING_URI}"
+      },
+      {
+        "name": "IMAGES_PATH",
+        "value": "${IMAGES_PATH}"
+      },
+      {
+        "name": "WEIGHTS_PATH",
+        "value": "${WEIGHTS_PATH}"
+      },
+      {
+        "name": "TRAINING_SCRIPT",
+        "value": "${DEFAULT_SCRIPT}"
+      }
+    ],
+    "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/batch/job",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "test-debug"
+        }
+    },
+    "executionRoleArn": "arn:aws:iam::${AWS_ACCT_ID}:role/BatchExecutionRole",
+    "image": "${ECR_REPO_URI}:latest",
+    "command": []
+  }
+}

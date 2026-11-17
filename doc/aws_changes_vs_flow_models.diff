@@ -1,0 +1,391 @@
+diff -ru aws/job-support-awsbatch/README.md image_gen/aws/job-support-awsbatch/README.md
+--- flow_models/aws/job-support-awsbatch/README.md	2026-11-16 18:15:44.049118534 -0800
++++ image_gen/aws/job-support-awsbatch/README.md	2026-11-16 18:54:45.932511164 -0800
+@@ -67,7 +67,7 @@
+ ## Submitting a job
+ 
+ ```bash
+-make batch-submit              # submit job; prints JOBID immediately
++make batch-submit SCRIPT=name  # submit job for train_<name>.py; prints JOBID immediately
+ ```
+ 
+ ## Monitoring jobs
+diff -ru aws/job-support-awsbatch/job_definition_template.json image_gen/aws/job-support-awsbatch/job_definition_template.json
+--- flow_models/aws/job-support-awsbatch/job_definition_template.json	2026-11-16 18:15:44.049149162 -0800
++++ image_gen/aws/job-support-awsbatch/job_definition_template.json	2026-11-16 18:54:31.958640383 -0800
+@@ -35,7 +35,7 @@
+       },
+       {
+         "name": "TRAINING_SCRIPT",
+-        "value": "1"
++        "value": "${DEFAULT_SCRIPT}"
+       }
+     ],
+     "logConfiguration": {
+diff -ru aws/job-support-awsbatch/makefile-awsbatch.mk image_gen/aws/job-support-awsbatch/makefile-awsbatch.mk
+--- flow_models/aws/job-support-awsbatch/makefile-awsbatch.mk	2026-11-16 18:15:44.049149162 -0800
++++ image_gen/aws/job-support-awsbatch/makefile-awsbatch.mk	2026-11-16 18:54:31.958046529 -0800
+@@ -7,7 +7,11 @@
+ #   AWSBATCH_SUBNET   - VPC subnet ID for Batch compute (create-compute-env)
+ #   AWSBATCH_SG       - Security group ID for Batch compute (create-compute-env)
+ #   MLFLOW_TRACKING_URI - MLflow server URI (register-job-definition)
+-#   IMAGES_PATH       - S3 URI of training images (register-job-definition, optional for train1)
++#   IMAGES_PATH       - S3 URI of training images (register-job-definition)
++#
++# Make variables expected from the including (root) makefile:
++#   DEFAULT_SCRIPT    - SCRIPT name baked into the job definition as the default
++#                       TRAINING_SCRIPT (batch-submit SCRIPT=name overrides it per job)
+ #
+ # Note: several variables are purposely exported to the environment (to be
+ # env vars) because they are passed to envsubst to substitute into a file.
+@@ -28,11 +32,12 @@
+ export MLFLOW_TRACKING_URI
+ export IMAGES_PATH
+ export WEIGHTS_PATH
++export DEFAULT_SCRIPT
+ 
+ batch-help:
+ 	@echo "once/rarely:    create-batch-executation-role  create-batch-instance-profile  create-compute-env  create-job-queue"
+ 	@echo "sometimes:      register-job-definition"
+-	@echo "more often:     batch-submit"
++	@echo "more often:     batch-submit [SCRIPT=name]"
+ 	@echo "job checks:     batch-list  batch-status JOBID=id  batch-logs JOBID=id  batch-cancel JOBID=id"
+ 	@echo "compute checks: list-compute-resources  delete-compute-resources1  delete-compute-resources2"
+ 	@echo "(for ECR/CodeBuild/image targets see aws/job-support-common/makefile-common.mk)"
+@@ -99,9 +104,11 @@
+ 
+ batch-submit:
+ 	# Submit a Batch training job.  Prints job ID immediately.
+-	$(eval JOB_ID := $(shell aws batch submit-job --job-name MyGPUJob \
++	# Usage: make batch-submit [SCRIPT=name]   (SCRIPT defaults to DEFAULT_SCRIPT)
++	$(eval BATCH_SCRIPT := $(if $(SCRIPT),$(SCRIPT),$(DEFAULT_SCRIPT)))
++	$(eval JOB_ID := $(shell aws batch submit-job --job-name $(subst _,,$(PROJECT_NAME))-$(BATCH_SCRIPT) \
+ 	  --job-queue ${JOB_QUEUE_NAME} --job-definition ${JOB_DEF_NAME} \
+-	  --overrides '{"environment":[{"name":"HOST_USER","value":"$(shell whoami)"}]}' \
++	  --overrides '{"environment":[{"name":"HOST_USER","value":"$(shell whoami)"},{"name":"TRAINING_SCRIPT","value":"$(BATCH_SCRIPT)"}]}' \
+ 	  --query 'jobId' --output text --no-cli-pager))
+ 	@echo "Submitted: $(JOB_ID)"
+ 	@echo "Check status: make batch-status JOBID=$(JOB_ID)"
+diff -ru aws/job-support-common/README.md image_gen/aws/job-support-common/README.md
+--- flow_models/aws/job-support-common/README.md	2026-11-16 18:15:44.049149162 -0800
++++ image_gen/aws/job-support-common/README.md	2026-11-16 18:54:45.932290444 -0800
+@@ -72,7 +72,7 @@
+ 
+ ```bash
+ make create-vpc-endpoints VPC_ID=vpc-xxx  # create before submitting jobs
+-make sm-submit SCRIPT=N                   # (or batch-submit)
++make sm-submit SCRIPT=name                   # (or batch-submit)
+ make sm-status JOB=...                    # monitor until Completed/Failed
+ make delete-vpc-endpoints                 # delete interface endpoints after run
+ ```
+@@ -83,7 +83,7 @@
+ 
+ ```bash
+ make local-build DEVICE=cpu         # build CPU image locally (also =gpu on GPU-equipped machine)
+-make local-run SCRIPT=N DEVICE=cpu  # run training script N in the local container
++make local-run SCRIPT=name DEVICE=cpu  # run train_<name>.py in the local container
+ ```
+ 
+ `make local-build` uses the local working directory as the build context, so it
+diff -ru aws/job-support-common/buildspec.yml image_gen/aws/job-support-common/buildspec.yml
+--- flow_models/aws/job-support-common/buildspec.yml	2026-11-16 18:15:44.049271537 -0800
++++ image_gen/aws/job-support-common/buildspec.yml	2026-11-16 18:55:09.773434631 -0800
+@@ -10,7 +10,7 @@
+       - docker info | head -26
+       - docker ps
+       - docker pull ${ECR_REPO_URI}:${BRANCH_TAG}-${DEVICE} 2>/dev/null || true
+-      - docker build --cache-from ${ECR_REPO_URI}:${BRANCH_TAG}-${DEVICE} -t ${ECR_REPO_URI}:${IMAGE_TAG}-${DEVICE} .
++      - docker build --build-arg DEVICE=${DEVICE} --cache-from ${ECR_REPO_URI}:${BRANCH_TAG}-${DEVICE} -t ${ECR_REPO_URI}:${IMAGE_TAG}-${DEVICE} .
+       - docker tag ${ECR_REPO_URI}:${IMAGE_TAG}-${DEVICE} ${ECR_REPO_URI}:${BRANCH_TAG}-${DEVICE}
+       - if [ "${BRANCH_TAG}" = "main" ] && [ "${DEVICE}" = "gpu" ]; then docker tag ${ECR_REPO_URI}:${IMAGE_TAG}-${DEVICE} ${ECR_REPO_URI}:latest; fi
+   post_build:
+diff -ru aws/job-support-common/entrypoint.sh image_gen/aws/job-support-common/entrypoint.sh
+--- flow_models/aws/job-support-common/entrypoint.sh	2026-11-16 18:15:44.049271537 -0800
++++ image_gen/aws/job-support-common/entrypoint.sh	2026-11-16 18:54:31.958771973 -0800
+@@ -1,9 +1,22 @@
+ #!/bin/bash
+ set -e
+ 
+-SCRIPT="train_flowmodels${TRAINING_SCRIPT:-1}.py"
++# Convention (project-agnostic): TRAINING_SCRIPT=<name> runs /app/train_<name>.py
++# with parameter overrides from params_<name>.json.
++if [ -z "$TRAINING_SCRIPT" ]; then
++    echo "entrypoint: TRAINING_SCRIPT is not set (expected e.g. TRAINING_SCRIPT=vae" \
++         "to run train_vae.py)" >&2
++    exit 1
++fi
++
++SCRIPT="train_${TRAINING_SCRIPT}.py"
+ HP_FILE="/opt/ml/input/config/hyperparameters.json"
+-PARAMS_FILE="/opt/ml/input/data/params/params${TRAINING_SCRIPT:-1}.json"
++PARAMS_FILE="/opt/ml/input/data/params/params_${TRAINING_SCRIPT}.json"
++
++if [ ! -f "/app/$SCRIPT" ]; then
++    echo "entrypoint: /app/$SCRIPT not found" >&2
++    exit 1
++fi
+ 
+ # For local Docker: if params file is mounted but HP file is absent, create it
+ # so the script's param-loading logic works the same in all container contexts.
+diff -ru aws/job-support-common/makefile-common.mk image_gen/aws/job-support-common/makefile-common.mk
+--- flow_models/aws/job-support-common/makefile-common.mk	2026-11-16 18:15:44.049271537 -0800
++++ image_gen/aws/job-support-common/makefile-common.mk	2026-11-16 18:55:09.773145193 -0800
+@@ -9,17 +9,36 @@
+ #   MLFLOW_TRACKING_URI - MLflow server URI
+ #   TRAINING_SUBNET - private subnet ID for training compute (create-vpc-endpoints)
+ #   TRAINING_SG   - security group ID for training compute (create-vpc-endpoints)
++#
++# Make variables expected from the including (root) makefile, so that this
++# aws/ directory carries no project-specific names:
++#   PROJECT_NAME      - project/repo name, e.g. image_gen (required)
++#   GITHUB_REPO_URL   - https clone URL of the repo CodeBuild builds from (required)
++#   NO_IMAGES_SCRIPTS - optional space-separated list of SCRIPT names that do
++#                       not need IMAGES_PATH (default: empty = all need it)
+ 
+ 
+ # Default CIDR for the private training subnet; override with CIDR=x.x.x.x/xx on command line.
+ # Verify this does not overlap with existing subnets in your VPC before running create-training-subnet.
+ CIDR ?= 10.0.10.0/24
+ 
+-# Repo/project settings — adjust to taste:
+-ECR_REPO=flow_models
+-CODEBUILD_PROJ=flow_models_build
+-BRANCH ?= main  # git branch to build from; override with e.g. make build BRANCH=myfeature
+-DEVICE ?= gpu   # cpu or gpu; override with e.g. make local-build DEVICE=cpu
++ifndef PROJECT_NAME
++$(error PROJECT_NAME is not set. Define it in the root makefile before including makefile-common.mk)
++endif
++ifndef GITHUB_REPO_URL
++$(error GITHUB_REPO_URL is not set. Define it in the root makefile before including makefile-common.mk)
++endif
++
++# Repo/project settings — derived from PROJECT_NAME; override in root makefile to taste:
++ECR_REPO ?= $(PROJECT_NAME)
++CODEBUILD_PROJ ?= $(PROJECT_NAME)_build
++NO_IMAGES_SCRIPTS ?=
++# (comments kept on their own lines: make keeps trailing spaces before an
++# inline comment as part of the value, which would corrupt image tags)
++# git branch to build from; override with e.g. make build BRANCH=myfeature
++BRANCH ?= main
++# cpu or gpu; override with e.g. make local-build DEVICE=cpu
++DEVICE ?= gpu
+ 
+ export ECR_REPO_URI=${AWS_ACCT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}
+ 
+@@ -28,19 +47,20 @@
+ 
+ local-build:
+ 	# Build image locally for dev/testing.  Usage: make local-build [DEVICE=cpu]
+-	docker build -t $(ECR_REPO):$(BRANCH)-$(DEVICE) .
++	# DEVICE is passed as a build-arg; a Dockerfile may use it (ARG DEVICE) or ignore it.
++	docker build --build-arg DEVICE=$(DEVICE) -t $(ECR_REPO):$(BRANCH)-$(DEVICE) .
+ 
+ local-run:
+ 	# Run a training script locally in Docker.
+-	# Usage: make local-run SCRIPT=N [DEVICE=cpu]
++	# Usage: make local-run SCRIPT=name [DEVICE=cpu]   (runs train_<name>.py with params/params_<name>.json)
+ ifndef SCRIPT
+-	@echo "Usage: make local-run SCRIPT=1  (or SCRIPT=2, etc.)"
++	@echo "Usage: make local-run SCRIPT=name  (runs train_<name>.py with params/params_<name>.json)"
+ 	@exit 1
+ endif
+ ifndef MLFLOW_TRACKING_URI
+ 	$(error MLFLOW_TRACKING_URI is not set. You must export it before running make local-run)
+ endif
+-ifneq ($(SCRIPT),1)
++ifeq ($(filter $(SCRIPT),$(NO_IMAGES_SCRIPTS)),)
+ ifeq ($(IMAGES_PATH),)
+ 	$(error IMAGES_PATH is not set. Required for SCRIPT=$(SCRIPT) runs)
+ endif
+@@ -107,7 +127,7 @@
+ 	# Create the CodeBuild project (one-time/rare). Use update-codebuild-project if it already exists.
+ 	@aws codebuild create-project \
+ 	    --name ${CODEBUILD_PROJ} \
+-		--source "type=GITHUB,location=https://github.com/aganse/flow_models.git,buildspec=aws/job-support-common/buildspec.yml" \
++		--source "type=GITHUB,location=$(GITHUB_REPO_URL),buildspec=aws/job-support-common/buildspec.yml" \
+ 	    --artifacts "type=NO_ARTIFACTS" \
+ 	    --environment "type=LINUX_CONTAINER,image=aws/codebuild/standard:4.0,computeType=BUILD_GENERAL1_SMALL,environmentVariables=[{name='ECR_REPO_URI', value='${ECR_REPO_URI}'},{name='DEVICE', value='${DEVICE}'}]" \
+ 		--service-role arn:aws:iam::${AWS_ACCT_ID}:role/CodeBuildServiceRole
+@@ -116,7 +136,7 @@
+ 	# Update the existing CodeBuild project (e.g. after buildspec path changes).
+ 	@aws codebuild update-project \
+ 	    --name ${CODEBUILD_PROJ} \
+-		--source "type=GITHUB,location=https://github.com/aganse/flow_models.git,buildspec=aws/job-support-common/buildspec.yml" \
++		--source "type=GITHUB,location=$(GITHUB_REPO_URL),buildspec=aws/job-support-common/buildspec.yml" \
+ 	    --environment "type=LINUX_CONTAINER,image=aws/codebuild/standard:4.0,computeType=BUILD_GENERAL1_SMALL,environmentVariables=[{name='ECR_REPO_URI', value='${ECR_REPO_URI}'},{name='DEVICE', value='${DEVICE}'}]" \
+ 		--service-role arn:aws:iam::${AWS_ACCT_ID}:role/CodeBuildServiceRole \
+ 		--no-cli-pager > /dev/null
+@@ -378,7 +398,7 @@
+ 	@echo "one-time setup: create-ecr-repo  create-codebuild-role  create-codebuild-project"
+ 	@echo "                create-training-subnet VPC_ID=vpc-xxx  create-training-sg VPC_ID=vpc-xxx"
+ 	@echo "update:         update-codebuild-project"
+-	@echo "local docker:   local-build [DEVICE=cpu]  local-run SCRIPT=N [DEVICE=cpu]"
++	@echo "local docker:   local-build [DEVICE=cpu]  local-run SCRIPT=name [DEVICE=cpu]"
+ 	@echo "build:          build [BRANCH=main] [DEVICE=gpu]  build-status BUILD=id  build-logs BUILD=id"
+ 	@echo "ecr images:     list-ecr-images  delete-ecr-image TAG=t  tag-ecr-image FROM=t TO=t"
+ 	@echo "ecr repos:      list-ecr-repos  push-to-ecr DEVICE=gpu"
+diff -ru aws/job-support-sagemaker/README.md image_gen/aws/job-support-sagemaker/README.md
+--- flow_models/aws/job-support-sagemaker/README.md	2026-11-16 18:15:44.049271537 -0800
++++ image_gen/aws/job-support-sagemaker/README.md	2026-11-16 18:54:45.931887337 -0800
+@@ -59,8 +59,7 @@
+ Edit the params file for the script you intend to run before submitting:
+ 
+ ```
+-params/params1.json    # parameters for train_flowmodels1.py
+-params/params2.json    # parameters for train_flowmodels2.py
++params/params_<name>.json    # parameters for train_<name>.py  (make sm-submit SCRIPT=<name>)
+ ```
+ 
+ These files use the same three-group structure as the training scripts
+@@ -78,10 +77,9 @@
+ ## Submitting a job
+ 
+ ```bash
+-make sm-submit SCRIPT=1                              # submit train_flowmodels1.py using :latest
+-make sm-submit SCRIPT=2                              # submit train_flowmodels2.py using :latest
+-make sm-submit SCRIPT=2 TAG=myfeature-gpu            # use a specific image tag
+-make sm-submit SCRIPT=2 SM_INSTANCE_TYPE=ml.g4dn.2xlarge  # use a different instance type
++make sm-submit SCRIPT=name                           # submit train_<name>.py using :latest
++make sm-submit SCRIPT=name TAG=myfeature-gpu         # use a specific image tag
++make sm-submit SCRIPT=name SM_INSTANCE_TYPE=ml.g4dn.2xlarge  # use a different instance type
+ ```
+ 
+ `TAG` defaults to `latest` (= `main-gpu`). `SM_INSTANCE_TYPE` defaults to `ml.g4dn.xlarge`.
+@@ -103,7 +101,7 @@
+ restarting from epoch 0.
+ 
+ ```bash
+-make sm-submit SCRIPT=2 SPOT=1
++make sm-submit SCRIPT=name SPOT=1
+ ```
+ 
+ | Variable | Default | Meaning |
+@@ -122,10 +120,10 @@
+ 
+ ```bash
+ make sm-list                  # list recent jobs and status
+-make sm-status JOB=flowmodels2-... # describe a specific job
+-make sm-logs JOB=flowmodels2-...   # fetch CloudWatch logs for a job
+-make sm-cancel JOB=flowmodels2-... # stop a running job
++make sm-status JOB=<job-name> # describe a specific job
++make sm-logs JOB=<job-name>   # fetch CloudWatch logs for a job
++make sm-cancel JOB=<job-name> # stop a running job
+ ```
+ 
+ The job name is printed by `make sm-submit` and follows the pattern
+-`flowmodelsN-YYYYMMDD-HHMMSS`.
++`<prefix>-<name>-<instance>[-spot]-YYYYMMDD-HHMMSS`.
+diff -ru aws/job-support-sagemaker/makefile-sagemaker.mk image_gen/aws/job-support-sagemaker/makefile-sagemaker.mk
+--- flow_models/aws/job-support-sagemaker/makefile-sagemaker.mk	2026-11-16 18:15:44.049393275 -0800
++++ image_gen/aws/job-support-sagemaker/makefile-sagemaker.mk	2026-11-16 19:05:45.534485872 -0800
+@@ -18,17 +18,21 @@
+ SM_MAX_RUNTIME=86400
+ SM_MAX_WAIT ?= 90000
+ # Prefix for SageMaker job names; alphanumeric only (no hyphens or underscores) —
+-# hyphens are used as separators between prefix, instance type, and date in the full name.
+-# Override per-repo to keep job names meaningful across projects.
+-SM_JOB_PREFIX=flowmodels
+-# ECR image tag to use; override with e.g. make sm-submit SCRIPT=2 TAG=cleanup-gpu
++# hyphens are used as separators between prefix, script name, instance type, and
++# date in the full name.  Derived from PROJECT_NAME (set in root makefile) with
++# underscores removed; override in root makefile to taste.  Note SCRIPT names
++# must also be alphanumeric since they become part of the job name.
++SM_JOB_PREFIX ?= $(subst _,,$(PROJECT_NAME))
++# ECR image tag to use; override with e.g. make sm-submit SCRIPT=name TAG=cleanup-gpu
+ TAG ?= latest
+ 
+ # Spot instance flags: set when SPOT=1 is passed on the command line.
+ # SM_MAX_WAIT is the total wall-clock deadline including interruption waits
+ # (must be >= SM_MAX_RUNTIME); override with e.g. make sm-submit SPOT=1 SM_MAX_WAIT=36000
+ ifdef SPOT
+-SM_SPOT_FLAGS := --enable-managed-spot-training \
++# (recursive '=' rather than ':=' so that JOB_NAME, which is only set inside the
++# sm-submit recipe, is expanded at use time and each job gets its own checkpoint prefix)
++SM_SPOT_FLAGS = --enable-managed-spot-training \
+   --checkpoint-config S3Uri=$(WEIGHTS_PATH)/checkpoints/$(JOB_NAME)/
+ SM_STOPPING := --stopping-condition \
+   MaxRuntimeInSeconds=$(SM_MAX_RUNTIME),MaxWaitTimeInSeconds=$(SM_MAX_WAIT)
+@@ -48,7 +52,7 @@
+ 	@echo "sometimes:     build  (shared CodeBuild pipeline, pushes to ECR)"
+ 	@echo "image checks:  list-ecr-images"
+ 	@echo "per-run:       create-vpc-endpoints VPC_ID=vpc-xxx  (before)  delete-vpc-endpoints  (after)"
+-	@echo "more often:    sm-submit SCRIPT=1 [TAG=main-gpu]  (TAG defaults to latest)"
++	@echo "more often:    sm-submit SCRIPT=name [TAG=main-gpu]  (TAG defaults to latest)"
+ 	@echo "job checks:    sm-list,  sm-status JOB=name,  sm-logs JOB=name,  sm-cancel JOB=name"
+ 
+ sm-create-role:
+@@ -70,17 +74,18 @@
+ 	  --output table 2>/dev/null || echo "SageMakerExecutionRole does not exist."
+ 
+ sm-submit:
+-	# Submit a SageMaker Training Job for train_flowmodelsN.py.
+-	# Usage: make sm-submit SCRIPT=1  (or SCRIPT=2, etc.)
++	# Submit a SageMaker Training Job for train_<name>.py with params/params_<name>.json.
++	# Usage: make sm-submit SCRIPT=name
+ ifndef SCRIPT
+-	@echo "Usage: make sm-submit SCRIPT=1  # or SCRIPT=2, etc."
++	@echo "Usage: make sm-submit SCRIPT=name  # runs train_<name>.py with params/params_<name>.json"
+ 	@echo
+ 	@exit 1
+ endif
+ ifndef MLFLOW_TRACKING_URI
+ 	$(error MLFLOW_TRACKING_URI is not set. You must export it before running sm-submit)
+ endif
+-	@if [ "$(SCRIPT)" != "1" ] && ! echo "$(IMAGES_PATH)" | grep -q "^s3://"; then \
++	@test -f params/params_$(SCRIPT).json || { echo "Error: params/params_$(SCRIPT).json not found" >&2; exit 1; }
++	@if [ -z "$(filter $(SCRIPT),$(NO_IMAGES_SCRIPTS))" ] && ! echo "$(IMAGES_PATH)" | grep -q "^s3://"; then \
+ 	  echo "Error: IMAGES_PATH must be an s3:// URI for SCRIPT=$(SCRIPT) SageMaker runs with images" >&2; exit 1; fi
+ 	@if [ -n "$(WEIGHTS_PATH)" ] && ! echo "$(WEIGHTS_PATH)" | grep -q "^s3://"; then \
+ 	  echo "Error: WEIGHTS_PATH must be an s3:// URI if set, got: '$(WEIGHTS_PATH)'" >&2; exit 1; fi
+@@ -97,8 +102,13 @@
+ 	$(error SM_SG is not set. Export it before running sm-submit)
+ endif
+ 	$(eval INST_ENC := $(shell echo "$(SM_INSTANCE_TYPE)" | sed 's/^ml\.//' | awk -F. '{s=$$2; gsub(/large/,"l",s); sub(/medium/,"m",s); sub(/small/,"s",s); print $$1"-"s}'))
+-	$(eval JOB_NAME := $(SM_JOB_PREFIX)$(SCRIPT)-$(INST_ENC)$(if $(SPOT),-spot,)-$(shell date +%Y%m%d-%H%M%S))
+-	$(eval PARAMS_BLOB := $(shell base64 -i params/params$(SCRIPT).json 2>/dev/null || base64 params/params$(SCRIPT).json | tr -d '\n'))
++	$(eval JOB_NAME := $(SM_JOB_PREFIX)-$(SCRIPT)-$(INST_ENC)$(if $(SPOT),-spot,)-$(shell date +%Y%m%d-%H%M%S))
++	# Params file is minified then base64-encoded (python used for macOS/Linux portability).
++	# SageMaker limits each hyperparameter value to 2500 characters, hence the minify + check.
++	$(eval PARAMS_BLOB := $(shell python3 -c "import base64,json,sys; print(base64.b64encode(json.dumps(json.load(open(sys.argv[1])),separators=(',',':')).encode()).decode())" params/params_$(SCRIPT).json 2>/dev/null))
++	@if [ -z "$(PARAMS_BLOB)" ]; then echo "Error: could not encode params/params_$(SCRIPT).json (invalid JSON?)" >&2; exit 1; fi
++	@if [ $$(printf '%s' "$(PARAMS_BLOB)" | wc -c) -gt 2500 ]; then \
++	  echo "Error: encoded params/params_$(SCRIPT).json exceeds SageMaker's 2500-char hyperparameter limit; trim the file" >&2; exit 1; fi
+ 	@aws sagemaker create-training-job \
+ 	  --training-job-name $(JOB_NAME) \
+ 	  --algorithm-specification \
+@@ -129,9 +139,9 @@
+ 	  python3 aws/job-support-sagemaker/sm-list-fmt.py
+ 
+ sm-status:
+-	# Show status of a submitted job.  Usage: make sm-status JOB=flowmodels2-20240101-120000
++	# Show status of a submitted job.  Usage: make sm-status JOB=<name-from-sm-submit>
+ ifndef JOB
+-	@echo "Usage: make sm-status JOB=flowmodels2-20240101-120000  # from output of make sm-submit"
++	@echo "Usage: make sm-status JOB=<name-from-sm-submit>  # from output of make sm-submit"
+ 	@echo
+ 	@exit 1
+ endif
+@@ -145,9 +155,9 @@
+ 
+ sm-logs:
+ 	# Tail CloudWatch logs for a running or completed job.
+-	# Usage: make sm-logs JOB=flowmodels2-20240101-120000
++	# Usage: make sm-logs JOB=<name-from-sm-submit>
+ ifndef JOB
+-	@echo "Usage: make sm-logs JOB=flowmodels2-20240101-120000  # from output of make sm-submit"
++	@echo "Usage: make sm-logs JOB=<name-from-sm-submit>  # from output of make sm-submit"
+ 	@echo
+ 	@exit 1
+ endif
+@@ -166,9 +176,9 @@
+ 	fi
+ 
+ sm-cancel:
+-	# Stop a running job.  Usage: make sm-cancel JOB=flowmodels2-20240101-120000
++	# Stop a running job.  Usage: make sm-cancel JOB=<name-from-sm-submit>
+ ifndef JOB
+-	@echo "Usage: make sm-cancel JOB=flowmodels2-20240101-120000  # from output of make sm-submit"
++	@echo "Usage: make sm-cancel JOB=<name-from-sm-submit>  # from output of make sm-submit"
+ 	@echo
+ 	@exit 1
+ endif
